@@ -726,6 +726,10 @@ struct perf_event {
 	void *security;
 #endif
 	struct list_head		sb_list;
+#ifdef CONFIG_PERF_KERNEL_SHARE
+	/* Is this event shared with other events */
+	bool				shared;
+#endif
 #endif /* CONFIG_PERF_EVENTS */
 };
 
@@ -1179,7 +1183,18 @@ extern void perf_event_bpf_event(struct bpf_prog *prog,
 				 enum perf_bpf_event_type type,
 				 u16 flags);
 
-extern struct perf_guest_info_callbacks *perf_guest_cbs;
+extern struct perf_guest_info_callbacks __rcu *perf_guest_cbs;
+static inline struct perf_guest_info_callbacks *perf_get_guest_cbs(void)
+{
+	/*
+	 * Callbacks are RCU-protected and must be READ_ONCE to avoid reloading
+	 * the callbacks between a !NULL check and dereferences, to ensure
+	 * pending stores/changes to the callback pointers are visible before a
+	 * non-NULL perf_guest_cbs is visible to readers, and to prevent a
+	 * module from unloading callbacks while readers are active.
+	 */
+	return rcu_dereference(perf_guest_cbs);
+}
 extern int perf_register_guest_info_callbacks(struct perf_guest_info_callbacks *callbacks);
 extern int perf_unregister_guest_info_callbacks(struct perf_guest_info_callbacks *callbacks);
 
@@ -1253,6 +1268,13 @@ int perf_event_max_stack_handler(struct ctl_table *table, int write,
 #define PERF_SECURITY_KERNEL		2
 #define PERF_SECURITY_TRACEPOINT	3
 
+#define TASK_TOMBSTONE ((void *)-1L)
+
+static bool is_kernel_event(struct perf_event *event)
+{
+	return READ_ONCE(event->owner) == TASK_TOMBSTONE;
+}
+
 static inline int perf_is_paranoid(void)
 {
 	return sysctl_perf_event_paranoid > -1;
@@ -1266,12 +1288,19 @@ static inline int perf_allow_kernel(struct perf_event_attr *attr)
 	return security_perf_event_open(attr, PERF_SECURITY_KERNEL);
 }
 
-static inline int perf_allow_cpu(struct perf_event_attr *attr)
+static inline int perf_allow_cpu(struct perf_event *event)
 {
-	if (sysctl_perf_event_paranoid > 0 && !capable(CAP_SYS_ADMIN))
+	if (sysctl_perf_event_paranoid > 0 && !is_kernel_event(event) &&
+		!capable(CAP_SYS_ADMIN)) {
 		return -EACCES;
+	}
 
-	return security_perf_event_open(attr, PERF_SECURITY_CPU);
+	/*
+	 * Bypass the system call security check if the
+	 * event creation is from the kernel
+	 */
+	return is_kernel_event(event) ? 0 :
+		security_perf_event_open(&event->attr, PERF_SECURITY_CPU);
 }
 
 static inline int perf_allow_tracepoint(struct perf_event_attr *attr)

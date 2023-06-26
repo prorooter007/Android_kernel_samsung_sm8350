@@ -16,7 +16,6 @@
 #include <linux/types.h>
 #include <linux/interrupt.h>
 #include <linux/nvmem-provider.h>
-#include <linux/android_kabi.h>
 #include <uapi/linux/rtc.h>
 
 extern int rtc_month_days(unsigned int month, unsigned int year);
@@ -79,12 +78,14 @@ struct rtc_class_ops {
 	int (*set_time)(struct device *, struct rtc_time *);
 	int (*read_alarm)(struct device *, struct rtc_wkalrm *);
 	int (*set_alarm)(struct device *, struct rtc_wkalrm *);
+#if IS_ENABLED(CONFIG_RTC_AUTO_PWRON)
+	int (*read_bootalarm)(struct device *, struct rtc_wkalrm *);
+	int (*set_bootalarm)(struct device *, struct rtc_wkalrm *);
+#endif
 	int (*proc)(struct device *, struct seq_file *);
 	int (*alarm_irq_enable)(struct device *, unsigned int enabled);
 	int (*read_offset)(struct device *, long *offset);
 	int (*set_offset)(struct device *, long offset);
-
-	ANDROID_KABI_RESERVE(1);
 };
 
 struct rtc_device;
@@ -159,8 +160,6 @@ struct rtc_device {
 	unsigned int uie_task_active:1;
 	unsigned int uie_timer_active:1;
 #endif
-
-	ANDROID_KABI_RESERVE(1);
 };
 #define to_rtc_device(d) container_of(d, struct rtc_device, dev)
 
@@ -186,6 +185,10 @@ extern int rtc_read_alarm(struct rtc_device *rtc,
 			struct rtc_wkalrm *alrm);
 extern int rtc_set_alarm(struct rtc_device *rtc,
 				struct rtc_wkalrm *alrm);
+#if IS_ENABLED(CONFIG_RTC_AUTO_PWRON)
+extern int rtc_set_bootalarm(struct rtc_device *rtc, struct rtc_wkalrm *alarm);
+extern int rtc_get_bootalarm(struct rtc_device *rtc, struct rtc_wkalrm *alarm);
+#endif
 extern int rtc_initialize_alarm(struct rtc_device *rtc,
 				struct rtc_wkalrm *alrm);
 extern void rtc_update_irq(struct rtc_device *rtc,

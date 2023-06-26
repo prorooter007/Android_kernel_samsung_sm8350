@@ -9,7 +9,6 @@
 
 #include <linux/device.h>
 #include <linux/mod_devicetable.h>
-#include <linux/android_kabi.h>
 
 struct mmc_cid {
 	unsigned int		manfid;
@@ -49,7 +48,6 @@ struct mmc_ext_csd {
 	u8			sec_feature_support;
 	u8			rel_sectors;
 	u8			rel_param;
-	bool			enhanced_rpmb_supported;
 	u8			part_config;
 	u8			cache_ctrl;
 	u8			rst_n_function;
@@ -87,6 +85,10 @@ struct mmc_ext_csd {
 	unsigned int            data_tag_unit_size;     /* DATA TAG UNIT size */
 	unsigned int		boot_ro_lock;		/* ro lock support */
 	bool			boot_ro_lockable;
+#if defined(CONFIG_SDC_QTI)
+	u8			raw_ext_csd_cmdq;	/* 15 */
+	u8			raw_ext_csd_cache_ctrl;	/* 33 */
+#endif
 	bool			ffu_capable;	/* Firmware upgrade support */
 	bool			cmdq_en;	/* Command Queue enabled */
 	bool			cmdq_support;	/* Command Queue supported */
@@ -97,7 +99,13 @@ struct mmc_ext_csd {
 	u8			raw_partition_support;	/* 160 */
 	u8			raw_rpmb_size_mult;	/* 168 */
 	u8			raw_erased_mem_count;	/* 181 */
+#if defined(CONFIG_SDC_QTI)
+	u8			raw_ext_csd_bus_width;	/* 183 */
+#endif
 	u8			strobe_support;		/* 184 */
+#if defined(CONFIG_SDC_QTI)
+	u8			raw_ext_csd_hs_timing;	/* 185 */
+#endif
 	u8			raw_ext_csd_structure;	/* 194 */
 	u8			raw_card_type;		/* 196 */
 	u8			raw_driver_strength;	/* 197 */
@@ -228,7 +236,7 @@ struct mmc_queue_req;
  * MMC Physical partitions
  */
 struct mmc_part {
-	u64		size;	/* partition size (in bytes) */
+	unsigned int	size;	/* partition size (in bytes) */
 	unsigned int	part_cfg;	/* partition type */
 	char	name[MAX_MMC_PART_NAME_LEN];
 	bool	force_ro;	/* to make boot parts RO by default */
@@ -237,8 +245,6 @@ struct mmc_part {
 #define MMC_BLK_DATA_AREA_BOOT	(1<<1)
 #define MMC_BLK_DATA_AREA_GP	(1<<2)
 #define MMC_BLK_DATA_AREA_RPMB	(1<<3)
-
-	ANDROID_KABI_RESERVE(1);
 };
 
 /*
@@ -248,6 +254,14 @@ struct mmc_card {
 	struct mmc_host		*host;		/* the host this device belongs to */
 	struct device		dev;		/* the device */
 	u32			ocr;		/* the current OCR setting */
+#if defined(CONFIG_SDC_QTI)
+	unsigned long		clk_scaling_lowest;	/* lowest scaleable
+							 * frequency
+							 */
+	unsigned long		clk_scaling_highest;	/* highest scaleable
+							 * frequency
+							 */
+#endif
 	unsigned int		rca;		/* relative card address of device */
 	unsigned int		type;		/* card type */
 #define MMC_TYPE_MMC		0		/* MMC card */
@@ -311,12 +325,11 @@ struct mmc_card {
 	struct dentry		*debugfs_root;
 	struct mmc_part	part[MMC_NUM_PHY_PARTITION]; /* physical partitions */
 	unsigned int    nr_parts;
-
+#if defined(CONFIG_SDC_QTI)
+	unsigned int            part_curr;
+#endif
 	unsigned int		bouncesz;	/* Bounce buffer size */
 	struct workqueue_struct *complete_wq;	/* Private workqueue */
-
-	ANDROID_KABI_RESERVE(1);
-	ANDROID_KABI_RESERVE(2);
 };
 
 static inline bool mmc_large_sector(struct mmc_card *card)

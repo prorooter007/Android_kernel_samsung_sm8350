@@ -309,7 +309,7 @@ void usb_put_intf(struct usb_interface *intf);
  * should cope with both LPJ calibration errors and devices not following every
  * detail of the USB Specification.
  */
-#define USB_RESUME_TIMEOUT	40 /* ms */
+#define USB_RESUME_TIMEOUT	20 /* ms */
 
 /**
  * struct usb_interface_cache - long-term representation of a device interface
@@ -1608,14 +1608,12 @@ struct urb {
 	int error_count;		/* (return) number of ISO errors */
 	void *context;			/* (in) context for completion */
 	usb_complete_t complete;	/* (in) completion routine */
-
+	struct usb_iso_packet_descriptor iso_frame_desc[0];
+					/* (in) ISO ONLY */
 	ANDROID_KABI_RESERVE(1);
 	ANDROID_KABI_RESERVE(2);
 	ANDROID_KABI_RESERVE(3);
 	ANDROID_KABI_RESERVE(4);
-
-	struct usb_iso_packet_descriptor iso_frame_desc[0];
-					/* (in) ISO ONLY */
 };
 
 /* ----------------------------------------------------------------------- */
@@ -2040,6 +2038,19 @@ enum usb_led_event {
 	USB_LED_EVENT_HOST = 0,
 	USB_LED_EVENT_GADGET = 1,
 };
+
+#if IS_ENABLED(CONFIG_USB_HOST_CERTIFICATION)
+/* USB certification */
+enum usb_host_certi_type {
+	USB_HOST_CERTI_UNSUPPORT_ACCESSORY,
+	USB_HOST_CERTI_NO_RESPONSE,
+	USB_HOST_CERTI_HUB_DEPTH_EXCEED,
+	USB_HOST_CERTI_HUB_POWER_EXCEED,
+	USB_HOST_CERTI_HOST_RESOURCE_EXCEED,
+	USB_HOST_CERTI_WARM_RESET
+};
+extern void send_usb_host_certi_uevent(struct device *dev, int usb_certi);
+#endif
 
 #ifdef CONFIG_USB_LED_TRIG
 extern void usb_led_activity(enum usb_led_event ev);

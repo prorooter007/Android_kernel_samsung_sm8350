@@ -17,7 +17,6 @@
 #include <linux/tty.h>
 #include <linux/mutex.h>
 #include <linux/sysrq.h>
-#include <linux/android_kabi.h>
 #include <uapi/linux/serial_core.h>
 
 #ifdef CONFIG_SERIAL_CORE_CONSOLE
@@ -80,9 +79,6 @@ struct uart_ops {
 	void		(*poll_put_char)(struct uart_port *, unsigned char);
 	int		(*poll_get_char)(struct uart_port *);
 #endif
-
-	ANDROID_KABI_RESERVE(1);
-	ANDROID_KABI_RESERVE(2);
 };
 
 #define NO_POLL_CHAR		0x00ff0000
@@ -105,6 +101,12 @@ struct uart_icount {
 
 typedef unsigned int __bitwise upf_t;
 typedef unsigned int __bitwise upstat_t;
+
+struct uart_local_buf {
+	unsigned char *buffer;
+	unsigned int size;
+	unsigned int index;
+};
 
 struct uart_port {
 	spinlock_t		lock;			/* port lock */
@@ -258,8 +260,10 @@ struct uart_port {
 	struct serial_iso7816   iso7816;
 	void			*private_data;		/* generic platform data pointer */
 
-	ANDROID_KABI_RESERVE(1);
-	ANDROID_KABI_RESERVE(2);
+#ifdef CONFIG_QGKI
+	unsigned int			uart_logging;
+	struct uart_local_buf	uart_local_buf;
+#endif
 };
 
 static inline int serial_port_in(struct uart_port *up, int offset)
@@ -297,9 +301,11 @@ struct uart_state {
 	wait_queue_head_t	remove_wait;
 	struct uart_port	*uart_port;
 };
-
+#ifdef CONFIG_QGKI
+#define UART_XMIT_SIZE	(PAGE_SIZE * 4)
+#else
 #define UART_XMIT_SIZE	PAGE_SIZE
-
+#endif
 
 /* number of characters left in xmit buffer before we ask for more */
 #define WAKEUP_CHARS		256
@@ -322,8 +328,6 @@ struct uart_driver {
 	 */
 	struct uart_state	*state;
 	struct tty_driver	*tty_driver;
-
-	ANDROID_KABI_RESERVE(1);
 };
 
 void uart_write_wakeup(struct uart_port *port);

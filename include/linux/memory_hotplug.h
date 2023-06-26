@@ -110,6 +110,7 @@ extern void __online_page_increment_counters(struct page *page);
 extern void __online_page_free(struct page *page);
 
 extern int try_online_node(int nid);
+extern bool try_online_one_block(int nid);
 
 extern int arch_add_memory(int nid, u64 start, u64 size,
 			struct mhp_restrictions *restrictions);
@@ -269,6 +270,11 @@ static inline int try_online_node(int nid)
 	return 0;
 }
 
+static inline bool try_online_one_block(int nid)
+{
+	return false;
+}
+
 static inline void get_online_mems(void) {}
 static inline void put_online_mems(void) {}
 
@@ -358,6 +364,6 @@ extern struct page *sparse_decode_mem_map(unsigned long coded_mem_map,
 					  unsigned long pnum);
 extern bool allow_online_pfn_range(int nid, unsigned long pfn, unsigned long nr_pages,
 		int online_type);
-extern struct zone *zone_for_pfn_range(int online_type, int nid, unsigned start_pfn,
-		unsigned long nr_pages);
+extern struct zone *zone_for_pfn_range(int online_type, int nid,
+		unsigned long start_pfn, unsigned long nr_pages);
 #endif /* __LINUX_MEMORY_HOTPLUG_H */

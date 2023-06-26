@@ -5,6 +5,7 @@
  *  Copyright (C) 2008  Intel Corp
  *  Copyright (C) 2008  Zhang Rui <rui.zhang@intel.com>
  *  Copyright (C) 2008  Sujith Thomas <sujith.thomas@intel.com>
+ *  Copyright (c) 2019, The Linux Foundation. All rights reserved.
  */
 
 #ifndef __THERMAL_H__
@@ -15,8 +16,23 @@
 #include <linux/device.h>
 #include <linux/sysfs.h>
 #include <linux/workqueue.h>
-#include <linux/android_kabi.h>
 #include <uapi/linux/thermal.h>
+
+#if IS_ENABLED(CONFIG_SEC_PM)
+#include <linux/ipc_logging.h>
+extern void *thermal_ipc_log;
+#define THERMAL_IPC_LOG(msg, ...)						\
+	do {								\
+		if (thermal_ipc_log)					\
+			ipc_log_string(thermal_ipc_log, msg, ##__VA_ARGS__);	\
+	} while (0)
+
+/* SS THERMAL LOG */
+#if IS_ENABLED(CONFIG_SEC_THERMAL_LOG)
+void ss_thermal_log_init(void);
+void ss_thermal_print(const char *fmt, ...);
+#endif
+#endif
 
 #define THERMAL_TRIPS_NONE	-1
 #define THERMAL_MAX_TRIPS	12
@@ -26,6 +42,9 @@
 
 /* No upper/lower limit requirement */
 #define THERMAL_NO_LIMIT	((u32)~0)
+
+/* upper limit requirement */
+#define THERMAL_MAX_LIMIT	(THERMAL_NO_LIMIT - 1)
 
 /* Default weight of a bound cooling device */
 #define THERMAL_WEIGHT_DEFAULT 0
@@ -114,7 +133,6 @@ struct thermal_zone_device_ops {
 			  enum thermal_trend *);
 	int (*notify) (struct thermal_zone_device *, int,
 		       enum thermal_trip_type);
-	ANDROID_KABI_RESERVE(1);
 };
 
 struct thermal_cooling_device_ops {
@@ -127,8 +145,6 @@ struct thermal_cooling_device_ops {
 			   struct thermal_zone_device *, unsigned long, u32 *);
 	int (*power2state)(struct thermal_cooling_device *,
 			   struct thermal_zone_device *, u32, unsigned long *);
-
-	ANDROID_KABI_RESERVE(1);
 };
 
 struct thermal_cooling_device {
@@ -143,8 +159,6 @@ struct thermal_cooling_device {
 	struct mutex lock; /* protect thermal_instances list */
 	struct list_head thermal_instances;
 	struct list_head node;
-
-	ANDROID_KABI_RESERVE(1);
 };
 
 struct thermal_attr {
@@ -225,8 +239,6 @@ struct thermal_zone_device {
 	struct list_head node;
 	struct delayed_work poll_queue;
 	enum thermal_notify_event notify_event;
-
-	ANDROID_KABI_RESERVE(1);
 };
 
 /**
@@ -247,8 +259,6 @@ struct thermal_governor {
 	void (*unbind_from_tz)(struct thermal_zone_device *tz);
 	int (*throttle)(struct thermal_zone_device *tz, int trip);
 	struct list_head	governor_list;
-
-	ANDROID_KABI_RESERVE(1);
 };
 
 /* Structure that holds binding parameters for a zone */
@@ -284,8 +294,6 @@ struct thermal_bind_params {
 	unsigned long *binding_limits;
 	int (*match) (struct thermal_zone_device *tz,
 			struct thermal_cooling_device *cdev);
-
-	ANDROID_KABI_RESERVE(1);
 };
 
 /* Structure to define Thermal Zone parameters */
@@ -339,8 +347,6 @@ struct thermal_zone_params {
 	 * 		Used by thermal zone drivers (default 0).
 	 */
 	int offset;
-
-	ANDROID_KABI_RESERVE(1);
 };
 
 struct thermal_genl_event {
@@ -370,8 +376,6 @@ struct thermal_zone_of_device_ops {
 	int (*set_trips)(void *, int, int);
 	int (*set_emul_temp)(void *, int);
 	int (*set_trip_temp)(void *, int, int);
-
-	ANDROID_KABI_RESERVE(1);
 };
 
 /**
@@ -387,8 +391,6 @@ struct thermal_trip {
 	int temperature;
 	int hysteresis;
 	enum thermal_trip_type type;
-
-	ANDROID_KABI_RESERVE(1);
 };
 
 /* Function declarations */
@@ -458,6 +460,15 @@ int thermal_zone_unbind_cooling_device(struct thermal_zone_device *, int,
 				       struct thermal_cooling_device *);
 void thermal_zone_device_update(struct thermal_zone_device *,
 				enum thermal_notify_event);
+#ifdef CONFIG_QTI_THERMAL
+void thermal_zone_device_update_temp(struct thermal_zone_device *tz,
+				enum thermal_notify_event event, int temp);
+#else
+static inline void thermal_zone_device_update_temp(
+		struct thermal_zone_device *tz, enum thermal_notify_event event,
+		int temp)
+{ }
+#endif
 void thermal_zone_set_trips(struct thermal_zone_device *);
 
 struct thermal_cooling_device *thermal_cooling_device_register(const char *,
@@ -519,12 +530,13 @@ static inline void thermal_zone_device_update(struct thermal_zone_device *tz,
 static inline void thermal_zone_set_trips(struct thermal_zone_device *tz)
 { }
 static inline struct thermal_cooling_device *
-thermal_cooling_device_register(char *type, void *devdata,
+thermal_cooling_device_register(const char *type, void *devdata,
 	const struct thermal_cooling_device_ops *ops)
 { return ERR_PTR(-ENODEV); }
 static inline struct thermal_cooling_device *
 thermal_of_cooling_device_register(struct device_node *np,
-	char *type, void *devdata, const struct thermal_cooling_device_ops *ops)
+	const char *type, void *devdata,
+	const struct thermal_cooling_device_ops *ops)
 { return ERR_PTR(-ENODEV); }
 static inline struct thermal_cooling_device *
 devm_thermal_of_cooling_device_register(struct device *dev,

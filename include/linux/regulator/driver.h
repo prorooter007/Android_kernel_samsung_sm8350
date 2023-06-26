@@ -16,7 +16,6 @@
 #include <linux/notifier.h>
 #include <linux/regulator/consumer.h>
 #include <linux/ww_mutex.h>
-#include <linux/android_kabi.h>
 
 struct gpio_desc;
 struct regmap;
@@ -159,6 +158,10 @@ struct regulator_ops {
 	int (*set_current_limit) (struct regulator_dev *,
 				 int min_uA, int max_uA);
 	int (*get_current_limit) (struct regulator_dev *);
+#ifdef CONFIG_SEC_PM
+	int (*set_short_detection)(struct regulator_dev *,
+				 bool enable, int lv_uA);
+#endif
 
 	int (*set_input_current_limit) (struct regulator_dev *, int lim_uA);
 	int (*set_over_current_protection) (struct regulator_dev *);
@@ -220,8 +223,6 @@ struct regulator_ops {
 	int (*resume)(struct regulator_dev *rdev);
 
 	int (*set_pull_down) (struct regulator_dev *);
-
-	ANDROID_KABI_RESERVE(1);
 };
 
 /*
@@ -393,8 +394,6 @@ struct regulator_desc {
 	unsigned int off_on_delay;
 
 	unsigned int (*of_map_mode)(unsigned int mode);
-
-	ANDROID_KABI_RESERVE(1);
 };
 
 /**
@@ -453,6 +452,9 @@ struct regulator_dev {
 	int exclusive;
 	u32 use_count;
 	u32 open_count;
+#ifdef CONFIG_REGULATOR_QTI_DEBUG
+	u32 open_offset;
+#endif
 	u32 bypass_count;
 
 	/* lists we belong to */
@@ -487,8 +489,9 @@ struct regulator_dev {
 
 	/* time when this regulator was disabled last time */
 	unsigned long last_off_jiffy;
-
-	ANDROID_KABI_RESERVE(1);
+#ifdef CONFIG_REGULATOR_QTI_DEBUG
+	struct regulator *debug_consumer;
+#endif
 };
 
 struct regulator_dev *
