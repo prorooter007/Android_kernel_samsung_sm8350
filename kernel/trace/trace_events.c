@@ -2247,11 +2247,18 @@ static struct trace_event_file *
 trace_create_new_event(struct trace_event_call *call,
 		       struct trace_array *tr)
 {
+	struct trace_pid_list *pid_list;
 	struct trace_event_file *file;
 
 	file = kmem_cache_alloc(file_cachep, GFP_TRACE);
 	if (!file)
 		return NULL;
+
+	pid_list = rcu_dereference_protected(tr->filtered_pids,
+					     lockdep_is_held(&event_mutex));
+
+	if (pid_list)
+		file->flags |= EVENT_FILE_FL_PID_FILTER;
 
 	file->event_call = call;
 	file->tr = tr;
@@ -3387,9 +3394,13 @@ function_test_events_call(unsigned long ip, unsigned long parent_ip,
 	entry	= ring_buffer_event_data(event);
 	entry->ip			= ip;
 	entry->parent_ip		= parent_ip;
-
+#ifdef CONFIG_CORESIGHT_QGKI
+	event_trigger_unlock_commit(&event_trace_file, buffer, event,
+				    entry, flags, pc, 0);
+#else
 	event_trigger_unlock_commit(&event_trace_file, buffer, event,
 				    entry, flags, pc);
+#endif
  out:
 	atomic_dec(&per_cpu(ftrace_test_event_disable, cpu));
 	preempt_enable_notrace();

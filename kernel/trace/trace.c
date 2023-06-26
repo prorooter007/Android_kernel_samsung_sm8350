@@ -33,6 +33,7 @@
 #include <linux/percpu.h>
 #include <linux/splice.h>
 #include <linux/kdebug.h>
+#include <linux/sizes.h>
 #include <linux/string.h>
 #include <linux/mount.h>
 #include <linux/rwsem.h>
@@ -45,6 +46,9 @@
 #include <linux/trace.h>
 #include <linux/sched/clock.h>
 #include <linux/sched/rt.h>
+#include <linux/coresight-stm.h>
+
+#include <soc/qcom/minidump.h>
 
 #include "trace.h"
 #include "trace_output.h"
@@ -118,7 +122,13 @@ cpumask_var_t __read_mostly	tracing_buffer_mask;
  * Set 2 if you want to dump the buffer of the CPU that triggered oops
  */
 
+#ifdef CONFIG_QCOM_MINIDUMP_FTRACE
+enum ftrace_dump_mode ftrace_dump_on_oops = DUMP_ALL;
+static bool minidump_ftrace_in_oops;
+static bool minidump_ftrace_dump = true;
+#else
 enum ftrace_dump_mode ftrace_dump_on_oops;
+#endif
 
 /* When set, tracing will stop when a WARN*() is hit */
 int __disable_trace_on_warning;
@@ -219,7 +229,7 @@ static char trace_boot_options_buf[MAX_TRACER_SIZE] __initdata;
 static int __init set_trace_boot_options(char *str)
 {
 	strlcpy(trace_boot_options_buf, str, MAX_TRACER_SIZE);
-	return 0;
+	return 1;
 }
 __setup("trace_options=", set_trace_boot_options);
 
@@ -230,12 +240,16 @@ static int __init set_trace_boot_clock(char *str)
 {
 	strlcpy(trace_boot_clock_buf, str, MAX_TRACER_SIZE);
 	trace_boot_clock = trace_boot_clock_buf;
-	return 0;
+	return 1;
 }
 __setup("trace_clock=", set_trace_boot_clock);
 
 static int __init set_tracepoint_printk(char *str)
 {
+	/* Ignore the "tp_printk_stop_on_boot" param */
+	if (*str == '_')
+		return 0;
+
 	if ((strcmp(str, "=0") != 0 && strcmp(str, "=off") != 0))
 		tracepoint_printk = 1;
 	return 1;
@@ -1301,10 +1315,12 @@ static int __init set_buf_size(char *str)
 	if (!str)
 		return 0;
 	buf_size = memparse(str, &str);
-	/* nr_entries can not be zero */
-	if (buf_size == 0)
-		return 0;
-	trace_buf_size = buf_size;
+	/*
+	 * nr_entries can not be zero and the startup
+	 * tests require some buffer space. Therefore
+	 * ensure we have at least 4096 bytes of buffer.
+	 */
+	trace_buf_size = max(4096UL, buf_size);
 	return 1;
 }
 __setup("trace_buf_size=", set_buf_size);
@@ -2531,7 +2547,7 @@ trace_event_buffer_lock_reserve(struct ring_buffer **current_rb,
 }
 EXPORT_SYMBOL_GPL(trace_event_buffer_lock_reserve);
 
-static DEFINE_SPINLOCK(tracepoint_iter_lock);
+static DEFINE_RAW_SPINLOCK(tracepoint_iter_lock);
 static DEFINE_MUTEX(tracepoint_printk_mutex);
 
 static void output_printk(struct trace_event_buffer *fbuffer)
@@ -2552,14 +2568,14 @@ static void output_printk(struct trace_event_buffer *fbuffer)
 
 	event = &fbuffer->trace_file->event_call->event;
 
-	spin_lock_irqsave(&tracepoint_iter_lock, flags);
+	raw_spin_lock_irqsave(&tracepoint_iter_lock, flags);
 	trace_seq_init(&iter->seq);
 	iter->ent = fbuffer->entry;
 	event_call->event.funcs->trace(iter, 0, event);
 	trace_seq_putc(&iter->seq, 0);
 	printk("%s", iter->seq.buffer);
 
-	spin_unlock_irqrestore(&tracepoint_iter_lock, flags);
+	raw_spin_unlock_irqrestore(&tracepoint_iter_lock, flags);
 }
 
 int tracepoint_printk_sysctl(struct ctl_table *table, int write,
@@ -2595,15 +2611,26 @@ int tracepoint_printk_sysctl(struct ctl_table *table, int write,
 	return ret;
 }
 
+#ifdef CONFIG_CORESIGHT_QGKI
+void trace_event_buffer_commit(struct trace_event_buffer *fbuffer,
+			       unsigned long len)
+{
+	if (static_key_false(&tracepoint_printk_key.key))
+		output_printk(fbuffer);
+	event_trigger_unlock_commit(fbuffer->trace_file, fbuffer->buffer,
+				    fbuffer->event, fbuffer->entry,
+				    fbuffer->flags, fbuffer->pc, len);
+}
+#else
 void trace_event_buffer_commit(struct trace_event_buffer *fbuffer)
 {
 	if (static_key_false(&tracepoint_printk_key.key))
 		output_printk(fbuffer);
-
 	event_trigger_unlock_commit(fbuffer->trace_file, fbuffer->buffer,
 				    fbuffer->event, fbuffer->entry,
 				    fbuffer->flags, fbuffer->pc);
 }
+#endif
 EXPORT_SYMBOL_GPL(trace_event_buffer_commit);
 
 /*
@@ -3007,7 +3034,7 @@ struct trace_buffer_struct {
 	char buffer[4][TRACE_BUF_SIZE];
 };
 
-static struct trace_buffer_struct *trace_percpu_buffer;
+static struct trace_buffer_struct __percpu *trace_percpu_buffer;
 
 /*
  * Thise allows for lockless recording.  If we're nested too deeply, then
@@ -3017,7 +3044,7 @@ static char *get_trace_buf(void)
 {
 	struct trace_buffer_struct *buffer = this_cpu_ptr(trace_percpu_buffer);
 
-	if (!buffer || buffer->nesting >= 4)
+	if (!trace_percpu_buffer || buffer->nesting >= 4)
 		return NULL;
 
 	buffer->nesting++;
@@ -3036,10 +3063,7 @@ static void put_trace_buf(void)
 
 static int alloc_percpu_trace_buffer(void)
 {
-	struct trace_buffer_struct *buffers;
-
-	if (trace_percpu_buffer)
-		return 0;
+	struct trace_buffer_struct __percpu *buffers;
 
 	buffers = alloc_percpu(struct trace_buffer_struct);
 	if (WARN(!buffers, "Could not allocate percpu trace_printk buffer"))
@@ -3217,6 +3241,7 @@ __trace_array_vprintk(struct ring_buffer *buffer,
 
 	memcpy(&entry->buf, tbuffer, len + 1);
 	if (!call_filter_check_discard(call, entry, buffer, event)) {
+		stm_log(OST_ENTITY_TRACE_PRINTK, entry->buf, len + 1);
 		__buffer_unlock_commit(buffer, event);
 		ftrace_trace_stack(&global_trace, buffer, flags, 6, pc, NULL);
 	}
@@ -3238,26 +3263,6 @@ int trace_array_vprintk(struct trace_array *tr,
 	return __trace_array_vprintk(tr->trace_buffer.buffer, ip, fmt, args);
 }
 
-/**
- * trace_array_printk - Print a message to a specific instance
- * @tr: The instance trace_array descriptor
- * @ip: The instruction pointer that this is called from.
- * @fmt: The format to print (printf format)
- *
- * If a subsystem sets up its own instance, they have the right to
- * printk strings into their tracing instance buffer using this
- * function. Note, this function will not write into the top level
- * buffer (use trace_printk() for that), as writing into the top level
- * buffer should only have events that can be individually disabled.
- * trace_printk() is only used for debugging a kernel, and should not
- * be ever encorporated in normal use.
- *
- * trace_array_printk() can be used, as it will not add noise to the
- * top level tracing buffer.
- *
- * Note, trace_array_init_printk() must be called on @tr before this
- * can be used.
- */
 __printf(3, 0)
 int trace_array_printk(struct trace_array *tr,
 		       unsigned long ip, const char *fmt, ...)
@@ -3277,27 +3282,6 @@ int trace_array_printk(struct trace_array *tr,
 	return ret;
 }
 EXPORT_SYMBOL_GPL(trace_array_printk);
-
-/**
- * trace_array_init_printk - Initialize buffers for trace_array_printk()
- * @tr: The trace array to initialize the buffers for
- *
- * As trace_array_printk() only writes into instances, they are OK to
- * have in the kernel (unlike trace_printk()). This needs to be called
- * before trace_array_printk() can be used on a trace_array.
- */
-int trace_array_init_printk(struct trace_array *tr)
-{
-	if (!tr)
-		return -ENOENT;
-
-	/* This is only allowed for created instances */
-	if (tr == &global_trace)
-		return -EINVAL;
-
-	return alloc_percpu_trace_buffer();
-}
-EXPORT_SYMBOL_GPL(trace_array_init_printk);
 
 __printf(3, 4)
 int trace_array_printk_buf(struct ring_buffer *buffer,
@@ -5676,10 +5660,16 @@ static void tracing_set_nop(struct trace_array *tr)
 	tr->current_trace = &nop_trace;
 }
 
+static bool tracer_options_updated;
+
 static void add_tracer_options(struct trace_array *tr, struct tracer *t)
 {
 	/* Only enable if the directory has been created already. */
 	if (!tr->dir)
+		return;
+
+	/* Only create trace option files after update_tracer_options finish */
+	if (!tracer_options_updated)
 		return;
 
 	create_trace_option_files(tr, t);
@@ -5738,7 +5728,7 @@ static int tracing_set_tracer(struct trace_array *tr, const char *buf)
 	}
 
 	/* If trace pipe files are being read, we can't change the tracer */
-	if (tr->trace_ref) {
+	if (tr->current_trace->ref) {
 		ret = -EBUSY;
 		goto out;
 	}
@@ -5954,7 +5944,7 @@ static int tracing_open_pipe(struct inode *inode, struct file *filp)
 
 	nonseekable_open(inode, filp);
 
-	tr->trace_ref++;
+	tr->current_trace->ref++;
 out:
 	mutex_unlock(&trace_types_lock);
 	return ret;
@@ -5973,7 +5963,7 @@ static int tracing_release_pipe(struct inode *inode, struct file *file)
 
 	mutex_lock(&trace_types_lock);
 
-	tr->trace_ref--;
+	tr->current_trace->ref--;
 
 	if (iter->trace->pipe_close)
 		iter->trace->pipe_close(iter);
@@ -6492,8 +6482,11 @@ tracing_mark_write(struct file *filp, const char __user *ubuf,
 	if (entry->buf[cnt - 1] != '\n') {
 		entry->buf[cnt] = '\n';
 		entry->buf[cnt + 1] = '\0';
-	} else
+		stm_log(OST_ENTITY_TRACE_MARKER, entry->buf, cnt + 2);
+	} else {
 		entry->buf[cnt] = '\0';
+		stm_log(OST_ENTITY_TRACE_MARKER, entry->buf, cnt + 1);
+	}
 
 	__buffer_unlock_commit(buffer, event);
 
@@ -7038,7 +7031,8 @@ static struct tracing_log_err *get_tracing_log_err(struct trace_array *tr)
 		err = kzalloc(sizeof(*err), GFP_KERNEL);
 		if (!err)
 			err = ERR_PTR(-ENOMEM);
-		tr->n_err_log_entries++;
+		else
+			tr->n_err_log_entries++;
 
 		return err;
 	}
@@ -7282,7 +7276,7 @@ static int tracing_buffers_open(struct inode *inode, struct file *filp)
 
 	filp->private_data = info;
 
-	tr->trace_ref++;
+	tr->current_trace->ref++;
 
 	mutex_unlock(&trace_types_lock);
 
@@ -7383,7 +7377,7 @@ static int tracing_buffers_release(struct inode *inode, struct file *file)
 
 	mutex_lock(&trace_types_lock);
 
-	iter->tr->trace_ref--;
+	iter->tr->current_trace->ref--;
 
 	__trace_array_put(iter->tr);
 
@@ -8428,6 +8422,7 @@ static void __update_tracer_options(struct trace_array *tr)
 static void update_tracer_options(struct trace_array *tr)
 {
 	mutex_lock(&trace_types_lock);
+	tracer_options_updated = true;
 	__update_tracer_options(tr);
 	mutex_unlock(&trace_types_lock);
 }
@@ -8522,7 +8517,7 @@ static int __remove_instance(struct trace_array *tr)
 {
 	int i;
 
-	if (tr->ref || (tr->current_trace && tr->trace_ref))
+	if (tr->ref || (tr->current_trace && tr->current_trace->ref))
 		return -EBUSY;
 
 	list_del(&tr->list);
@@ -8887,11 +8882,32 @@ static __init int tracer_init_tracefs(void)
 	return 0;
 }
 
+#ifdef CONFIG_QCOM_MINIDUMP_FTRACE
+static bool trace_oops_enter(void)
+{
+	if (minidump_ftrace_in_oops)
+		return true;
+	minidump_ftrace_in_oops = true;
+	return false;
+}
+
+static void trace_oops_exit(void)
+{
+	minidump_ftrace_in_oops = false;
+}
+#else
+static bool trace_oops_enter(void) { return false; }
+static void trace_oops_exit(void) { }
+#endif
+
 static int trace_panic_handler(struct notifier_block *this,
 			       unsigned long event, void *unused)
 {
+	if (trace_oops_enter())
+		return NOTIFY_OK;
 	if (ftrace_dump_on_oops)
 		ftrace_dump(ftrace_dump_on_oops);
+	trace_oops_exit();
 	return NOTIFY_OK;
 }
 
@@ -8905,6 +8921,8 @@ static int trace_die_handler(struct notifier_block *self,
 			     unsigned long val,
 			     void *data)
 {
+	if (trace_oops_enter())
+		return NOTIFY_OK;
 	switch (val) {
 	case DIE_OOPS:
 		if (ftrace_dump_on_oops)
@@ -8913,6 +8931,7 @@ static int trace_die_handler(struct notifier_block *self,
 	default:
 		break;
 	}
+	trace_oops_exit();
 	return NOTIFY_OK;
 }
 
@@ -8934,6 +8953,19 @@ static struct notifier_block trace_die_notifier = {
  */
 #define KERN_TRACE		KERN_EMERG
 
+#ifdef CONFIG_QCOM_MINIDUMP_FTRACE
+static void trace_dump_seq_buffer(struct trace_seq *s)
+{
+	if (minidump_ftrace_in_oops && minidump_ftrace_dump)
+		minidump_add_trace_event(s->buffer, s->seq.len);
+}
+#else
+static void trace_dump_seq_buffer(struct trace_seq *s)
+{
+	printk(KERN_TRACE "%s", s->buffer);
+}
+#endif
+
 void
 trace_printk_seq(struct trace_seq *s)
 {
@@ -8952,7 +8984,7 @@ trace_printk_seq(struct trace_seq *s)
 	/* should be zero ended, but we are paranoid. */
 	s->buffer[s->seq.len] = 0;
 
-	printk(KERN_TRACE "%s", s->buffer);
+	trace_dump_seq_buffer(s);
 
 	trace_seq_init(s);
 }
@@ -8975,6 +9007,33 @@ void trace_init_global_iter(struct trace_iterator *iter)
 	if (trace_clocks[iter->tr->clock_id].in_ns)
 		iter->iter_flags |= TRACE_FILE_TIME_IN_NS;
 }
+
+#ifdef CONFIG_QCOM_MINIDUMP_FTRACE
+static void trace_check_size(struct trace_iterator iter, int cpu)
+{
+	unsigned long buffer_size;
+
+	if (!minidump_ftrace_dump)
+		return;
+	buffer_size = ring_buffer_size(iter.tr->trace_buffer.buffer, cpu);
+	if (buffer_size > (SZ_256K + PAGE_SIZE)) {
+		printk(KERN_TRACE "Skip md ftrace buffer dump for: %#lx\n",
+			buffer_size);
+		minidump_ftrace_dump = false;
+	}
+}
+
+static bool trace_skip_ftrace_dump(void)
+{
+	return !minidump_ftrace_dump;
+}
+#else
+static void trace_check_size(struct trace_iterator iter, int cpu) { }
+static bool trace_skip_ftrace_dump(void)
+{
+	return false;
+}
+#endif
 
 void ftrace_dump(enum ftrace_dump_mode oops_dump_mode)
 {
@@ -9010,6 +9069,7 @@ void ftrace_dump(enum ftrace_dump_mode oops_dump_mode)
 
 	for_each_tracing_cpu(cpu) {
 		atomic_inc(&per_cpu_ptr(iter.trace_buffer->data, cpu)->disabled);
+		trace_check_size(iter, cpu);
 	}
 
 	old_userobj = tr->trace_flags & TRACE_ITER_SYM_USEROBJ;
@@ -9017,6 +9077,8 @@ void ftrace_dump(enum ftrace_dump_mode oops_dump_mode)
 	/* don't look at user memory in panic mode */
 	tr->trace_flags &= ~TRACE_ITER_SYM_USEROBJ;
 
+	if (trace_skip_ftrace_dump())
+		goto out_enable;
 	switch (oops_dump_mode) {
 	case DUMP_ALL:
 		iter.cpu_file = RING_BUFFER_ALL_CPUS;
@@ -9054,7 +9116,9 @@ void ftrace_dump(enum ftrace_dump_mode oops_dump_mode)
 		cnt++;
 
 		trace_iterator_reset(&iter);
-		iter.iter_flags |= TRACE_FILE_LAT_FMT;
+		/* Minidump ftraces need absolute event timestamp */
+		if (!IS_ENABLED(CONFIG_QCOM_MINIDUMP_FTRACE))
+			iter.iter_flags |= TRACE_FILE_LAT_FMT;
 
 		if (trace_find_next_entry_inc(&iter) != NULL) {
 			int ret;

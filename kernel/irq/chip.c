@@ -19,6 +19,9 @@
 #include <trace/events/irq.h>
 
 #include "internals.h"
+#if IS_ENABLED(CONFIG_SEC_DEBUG_SCHED_LOG)
+#include <linux/sec_debug.h>
+#endif
 
 static irqreturn_t bad_chained_irq(int irq, void *dev_id)
 {
@@ -955,9 +958,25 @@ void handle_percpu_devid_irq(struct irq_desc *desc)
 		chip->irq_ack(&desc->irq_data);
 
 	if (likely(action)) {
+#if defined(CONFIG_SEC_DEBUG_SCHED_LOG)
+#if defined(CONFIG_SEC_DEBUG_SCHED_LOG_IRQ_V2)
+		sec_debug_irq_sched_log(irq, desc, action, IRQ_ENTRY_V2);
+#else
+		sec_debug_irq_sched_log(irq, action->handler,
+				(char *)action->name, IRQ_ENTRY);
+#endif
+#endif
 		trace_irq_handler_entry(irq, action);
 		res = action->handler(irq, raw_cpu_ptr(action->percpu_dev_id));
 		trace_irq_handler_exit(irq, action, res);
+#if defined(CONFIG_SEC_DEBUG_SCHED_LOG)
+#if defined(CONFIG_SEC_DEBUG_SCHED_LOG_IRQ_V2)
+		sec_debug_irq_sched_log(irq, desc, action, IRQ_EXIT_V2);
+#else
+		sec_debug_irq_sched_log(irq, action->handler,
+				(char *)action->name, IRQ_EXIT);
+#endif
+#endif
 	} else {
 		unsigned int cpu = smp_processor_id();
 		bool enabled = cpumask_test_cpu(cpu, desc->percpu_enabled);
@@ -971,33 +990,6 @@ void handle_percpu_devid_irq(struct irq_desc *desc)
 
 	if (chip->irq_eoi)
 		chip->irq_eoi(&desc->irq_data);
-}
-
-/**
- * handle_percpu_devid_fasteoi_ipi - Per CPU local IPI handler with per cpu
- *				     dev ids
- * @desc:	the interrupt description structure for this irq
- *
- * The biggest difference with the IRQ version is that the interrupt is
- * EOIed early, as the IPI could result in a context switch, and we need to
- * make sure the IPI can fire again. We also assume that the arch code has
- * registered an action. If not, we are positively doomed.
- */
-void handle_percpu_devid_fasteoi_ipi(struct irq_desc *desc)
-{
-	struct irq_chip *chip = irq_desc_get_chip(desc);
-	struct irqaction *action = desc->action;
-	unsigned int irq = irq_desc_get_irq(desc);
-	irqreturn_t res;
-
-	__kstat_incr_irqs_this_cpu(desc);
-
-	if (chip->irq_eoi)
-		chip->irq_eoi(&desc->irq_data);
-
-	trace_irq_handler_entry(irq, action);
-	res = action->handler(irq, raw_cpu_ptr(action->percpu_dev_id));
-	trace_irq_handler_exit(irq, action, res);
 }
 
 /**

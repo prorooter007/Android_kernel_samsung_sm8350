@@ -4,6 +4,7 @@
  */
 #include <linux/cpufreq_times.h>
 #include "sched.h"
+#include "walt/walt.h"
 
 #ifdef CONFIG_IRQ_TIME_ACCOUNTING
 
@@ -71,6 +72,16 @@ void irqtime_account_irq(struct task_struct *curr)
 		irqtime_account_delta(irqtime, delta, CPUTIME_IRQ);
 	else if (in_serving_softirq() && curr != this_cpu_ksoftirqd())
 		irqtime_account_delta(irqtime, delta, CPUTIME_SOFTIRQ);
+
+#ifdef CONFIG_SCHED_WALT
+	if (is_idle_task(curr)) {
+		if (hardirq_count() || in_serving_softirq())
+			walt_sched_account_irqend(cpu, curr, delta);
+		else
+			walt_sched_account_irqstart(cpu, curr);
+	}
+	cpu_rq(cpu)->wrq.last_irq_window = cpu_rq(cpu)->wrq.window_start;
+#endif
 }
 EXPORT_SYMBOL_GPL(irqtime_account_irq);
 
@@ -151,10 +162,10 @@ void account_guest_time(struct task_struct *p, u64 cputime)
 
 	/* Add guest time to cpustat. */
 	if (task_nice(p) > 0) {
-		cpustat[CPUTIME_NICE] += cputime;
+		task_group_account_field(p, CPUTIME_NICE, cputime);
 		cpustat[CPUTIME_GUEST_NICE] += cputime;
 	} else {
-		cpustat[CPUTIME_USER] += cputime;
+		task_group_account_field(p, CPUTIME_USER, cputime);
 		cpustat[CPUTIME_GUEST] += cputime;
 	}
 }
