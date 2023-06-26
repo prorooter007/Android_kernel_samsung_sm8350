@@ -20,6 +20,8 @@
 #include <linux/vmalloc.h>
 #include <asm/page.h>
 
+#include "internal.h"
+
 /**
  * struct persistent_ram_buffer - persistent circular RAM buffer
  *
@@ -34,9 +36,12 @@ struct persistent_ram_buffer {
 	uint32_t    sig;
 	atomic_t    start;
 	atomic_t    size;
-	uint8_t     data[];
+	uint8_t     data[0];
 };
 
+#define MEM_TYPE_WCOMBINE	0
+#define MEM_TYPE_NONCACHED	1
+#define MEM_TYPE_NORMAL		2
 #define PERSISTENT_RAM_SIG (0x43474244) /* DBGC */
 
 static inline size_t buffer_size(struct persistent_ram_zone *prz)
@@ -285,6 +290,10 @@ static int notrace persistent_ram_update_user(struct persistent_ram_zone *prz,
 	struct persistent_ram_buffer *buffer = prz->buffer;
 	int ret = unlikely(__copy_from_user(buffer->data + start, s, count)) ?
 		-EFAULT : 0;
+
+	if (IS_ENABLED(CONFIG_PSTORE_PMSG_SSPLOG) && !ret)
+		ss_hook_pmsg(buffer->data + start, count);
+
 	persistent_ram_update_ecc(prz, start, count);
 	return ret;
 }
@@ -411,8 +420,10 @@ static void *persistent_ram_vmap(phys_addr_t start, size_t size,
 	page_start = start - offset_in_page(start);
 	page_count = DIV_ROUND_UP(size + offset_in_page(start), PAGE_SIZE);
 
-	if (memtype)
+	if (memtype == MEM_TYPE_NONCACHED)
 		prot = pgprot_noncached(PAGE_KERNEL);
+	else if (memtype == MEM_TYPE_NORMAL)
+		prot = PAGE_KERNEL;
 	else
 		prot = pgprot_writecombine(PAGE_KERNEL);
 
@@ -502,8 +513,9 @@ static int persistent_ram_post_init(struct persistent_ram_zone *prz, u32 sig,
 	sig ^= PERSISTENT_RAM_SIG;
 
 	if (prz->buffer->sig == sig) {
-		if (buffer_size(prz) == 0) {
+		if (buffer_size(prz) == 0 && buffer_start(prz) == 0) {
 			pr_debug("found existing empty buffer\n");
+			persistent_ram_zap(prz);
 			return 0;
 		}
 
