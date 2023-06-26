@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
  * Copyright (c) 2015, Sony Mobile Communications AB.
- * Copyright (c) 2012-2013, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2012-2013, 2020 The Linux Foundation. All rights reserved.
  */
 
 #include <linux/interrupt.h>
@@ -1274,7 +1274,8 @@ static void qcom_channel_state_worker(struct work_struct *work)
 
 		remote_state = GET_RX_CHANNEL_INFO(channel, state);
 		if (remote_state != SMD_CHANNEL_OPENING &&
-		    remote_state != SMD_CHANNEL_OPENED)
+		    remote_state != SMD_CHANNEL_OPENED &&
+		    remote_state != SMD_CHANNEL_CLOSING)
 			continue;
 
 		if (channel->registered)
@@ -1388,15 +1389,16 @@ static int qcom_smd_parse_edge(struct device *dev,
 		edge->name = node->name;
 
 	irq = irq_of_parse_and_map(node, 0);
-	if (irq < 0) {
+	if (!irq) {
 		dev_err(dev, "required smd interrupt missing\n");
-		ret = irq;
+		ret = -EINVAL;
 		goto put_node;
 	}
 
 	ret = devm_request_irq(dev, irq,
-			       qcom_smd_edge_intr, IRQF_TRIGGER_RISING,
-			       node->name, edge);
+			       qcom_smd_edge_intr, IRQF_TRIGGER_RISING
+				| IRQF_NO_SUSPEND, node->name, edge);
+
 	if (ret) {
 		dev_err(dev, "failed to request smd irq\n");
 		goto put_node;

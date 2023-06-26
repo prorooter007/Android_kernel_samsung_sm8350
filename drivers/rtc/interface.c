@@ -479,6 +479,14 @@ int rtc_set_alarm(struct rtc_device *rtc, struct rtc_wkalrm *alarm)
 }
 EXPORT_SYMBOL_GPL(rtc_set_alarm);
 
+static void rtc_alarm_disable(struct rtc_device *rtc)
+{
+	if (!rtc->ops || !rtc->ops->alarm_irq_enable)
+		return;
+
+	rtc->ops->alarm_irq_enable(rtc->dev.parent, false);
+}
+
 /* Called once per device from rtc_device_register */
 int rtc_initialize_alarm(struct rtc_device *rtc, struct rtc_wkalrm *alarm)
 {
@@ -506,11 +514,51 @@ int rtc_initialize_alarm(struct rtc_device *rtc, struct rtc_wkalrm *alarm)
 		rtc->aie_timer.enabled = 1;
 		timerqueue_add(&rtc->timerqueue, &rtc->aie_timer.node);
 		trace_rtc_timer_enqueue(&rtc->aie_timer);
+	} else if (alarm->enabled && (rtc_tm_to_ktime(now) >=
+			rtc->aie_timer.node.expires)){
+		rtc_alarm_disable(rtc);
 	}
+
 	mutex_unlock(&rtc->ops_lock);
 	return err;
 }
 EXPORT_SYMBOL_GPL(rtc_initialize_alarm);
+
+#if IS_ENABLED(CONFIG_RTC_AUTO_PWRON)
+int rtc_set_bootalarm(struct rtc_device *rtc, struct rtc_wkalrm *alarm)
+{
+	int err;
+
+	if (!rtc->ops) {
+		dev_err(&rtc->dev, "ops not exist\n");
+		err = -ENODEV;
+	} else if (!rtc->ops->set_bootalarm) {
+		dev_err(&rtc->dev, "bootalarm func not exist\n");
+		err = -EINVAL;
+	} else
+		err = rtc->ops->set_bootalarm(rtc->dev.parent, alarm);
+
+	return err;
+}
+EXPORT_SYMBOL_GPL(rtc_set_bootalarm);
+
+int rtc_get_bootalarm(struct rtc_device *rtc, struct rtc_wkalrm *alarm)
+{
+	int err;
+
+	if (!rtc->ops) {
+		dev_err(&rtc->dev, "ops not exist\n");
+		err = -ENODEV;
+	} else if (!rtc->ops->read_bootalarm) {
+		dev_err(&rtc->dev, "bootalarm func not exist\n");
+		err = -EINVAL;
+	} else
+		err = rtc->ops->read_bootalarm(rtc->dev.parent, alarm);
+
+	return err;
+}
+EXPORT_SYMBOL_GPL(rtc_get_bootalarm);
+#endif
 
 int rtc_alarm_irq_enable(struct rtc_device *rtc, unsigned int enabled)
 {
@@ -793,9 +841,13 @@ static int rtc_timer_enqueue(struct rtc_device *rtc, struct rtc_timer *timer)
 	struct timerqueue_node *next = timerqueue_getnext(&rtc->timerqueue);
 	struct rtc_time tm;
 	ktime_t now;
+	int err;
+
+	err = __rtc_read_time(rtc, &tm);
+	if (err)
+		return err;
 
 	timer->enabled = 1;
-	__rtc_read_time(rtc, &tm);
 	now = rtc_tm_to_ktime(tm);
 
 	/* Skip over expired timers */
@@ -809,7 +861,6 @@ static int rtc_timer_enqueue(struct rtc_device *rtc, struct rtc_timer *timer)
 	trace_rtc_timer_enqueue(timer);
 	if (!next || ktime_before(timer->node.expires, next->expires)) {
 		struct rtc_wkalrm alarm;
-		int err;
 
 		alarm.time = rtc_ktime_to_tm(timer->node.expires);
 		alarm.enabled = 1;
@@ -825,15 +876,6 @@ static int rtc_timer_enqueue(struct rtc_device *rtc, struct rtc_timer *timer)
 		}
 	}
 	return 0;
-}
-
-static void rtc_alarm_disable(struct rtc_device *rtc)
-{
-	if (!rtc->ops || !rtc->ops->alarm_irq_enable)
-		return;
-
-	rtc->ops->alarm_irq_enable(rtc->dev.parent, false);
-	trace_rtc_alarm_irq_enable(0, 0);
 }
 
 /**

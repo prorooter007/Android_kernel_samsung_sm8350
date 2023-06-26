@@ -12,8 +12,6 @@
 #include <linux/usb/hcd.h>
 #include "usb.h"
 
-#include <trace/hooks/usb.h>
-
 struct quirk_entry {
 	u16 vid;
 	u16 pid;
@@ -375,6 +373,9 @@ static const struct usb_device_id usb_quirk_list[] = {
 	{ USB_DEVICE(0x0904, 0x6103), .driver_info =
 			USB_QUIRK_LINEAR_FRAME_INTR_BINTERVAL },
 
+	/* Silicon Motion Flash drive */
+	{ USB_DEVICE(0x090c, 0x1000), .driver_info = USB_QUIRK_NO_LPM },
+
 	/* Sound Devices USBPre2 */
 	{ USB_DEVICE(0x0926, 0x0202), .driver_info =
 			USB_QUIRK_ENDPOINT_BLACKLIST },
@@ -406,6 +407,9 @@ static const struct usb_device_id usb_quirk_list[] = {
 	{ USB_DEVICE(0x0b05, 0x17e0), .driver_info =
 			USB_QUIRK_IGNORE_REMOTE_WAKEUP },
 
+	/* Realtek Semiconductor Corp. Mass Storage Device (Multicard Reader)*/
+	{ USB_DEVICE(0x0bda, 0x0151), .driver_info = USB_QUIRK_CONFIG_INTF_STRINGS },
+
 	/* Realtek hub in Dell WD19 (Type-C) */
 	{ USB_DEVICE(0x0bda, 0x0487), .driver_info = USB_QUIRK_NO_LPM },
 	{ USB_DEVICE(0x0bda, 0x5487), .driver_info = USB_QUIRK_RESET_RESUME },
@@ -436,6 +440,12 @@ static const struct usb_device_id usb_quirk_list[] = {
 	/* Razer - Razer Blade Keyboard */
 	{ USB_DEVICE(0x1532, 0x0116), .driver_info =
 			USB_QUIRK_LINEAR_UFRAME_INTR_BINTERVAL },
+
+	/* Lenovo USB-C to Ethernet Adapter RTL8153-04 */
+	{ USB_DEVICE(0x17ef, 0x720c), .driver_info = USB_QUIRK_NO_LPM },
+
+	/* Lenovo Powered USB-C Travel Hub (4X90S92381, RTL8153 GigE) */
+	{ USB_DEVICE(0x17ef, 0x721e), .driver_info = USB_QUIRK_NO_LPM },
 
 	/* Lenovo ThinkCenter A630Z TI024Gen3 usb-audio */
 	{ USB_DEVICE(0x17ef, 0xa012), .driver_info =
@@ -503,6 +513,12 @@ static const struct usb_device_id usb_quirk_list[] = {
 
 	/* DJI CineSSD */
 	{ USB_DEVICE(0x2ca3, 0x0031), .driver_info = USB_QUIRK_NO_LPM },
+
+	/* DELL USB GEN2 */
+	{ USB_DEVICE(0x413c, 0xb062), .driver_info = USB_QUIRK_NO_LPM | USB_QUIRK_RESET_RESUME },
+
+	/* VCOM device */
+	{ USB_DEVICE(0x4296, 0x7570), .driver_info = USB_QUIRK_CONFIG_INTF_STRINGS },
 
 	/* INTEL VALUE SSD */
 	{ USB_DEVICE(0x8086, 0xf1a5), .driver_info = USB_QUIRK_RESET_RESUME },
@@ -676,8 +692,6 @@ void usb_detect_quirks(struct usb_device *udev)
 	if (udev->descriptor.bDeviceClass == USB_CLASS_HUB)
 		udev->persist_enabled = 1;
 #endif	/* CONFIG_USB_DEFAULT_PERSIST */
-
-	trace_android_vh_usb_persist_overwrite(udev);
 }
 
 void usb_detect_interface_quirks(struct usb_device *udev)
@@ -700,3 +714,31 @@ void usb_release_quirk_list(void)
 	quirk_list = NULL;
 	mutex_unlock(&quirk_mutex);
 }
+
+#ifdef CONFIG_USB_INTERFACE_LPM_LIST
+static const struct usb_device_id usb_interface_list_lpm[] = {
+	{ .match_flags = USB_DEVICE_ID_MATCH_INT_CLASS,
+		.bInterfaceClass = USB_CLASS_AUDIO},
+	{ }						/* Terminating entry */
+};
+
+int usb_detect_interface_lpm(struct usb_device *udev)
+{
+	const struct usb_device_id *id = usb_interface_list_lpm;
+	int l1_enable = 0;
+	
+	for (; id->match_flags; id++) {
+		if (!usb_match_device(udev, id))
+			continue;
+
+		if ((id->match_flags & USB_DEVICE_ID_MATCH_INT_INFO) &&
+		    !usb_match_any_interface(udev, id))
+			continue;
+
+		l1_enable = 1;
+	}
+
+	pr_info("%s:Device will %s L1\n", __func__, l1_enable?"enable":"disable");
+	return l1_enable;
+}
+#endif

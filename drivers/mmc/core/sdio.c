@@ -626,6 +626,8 @@ try_again:
 	if (host->ops->init_card)
 		host->ops->init_card(host, card);
 
+	card->ocr = ocr_card;
+
 	/*
 	 * If the host and card support UHS-I mode request the card
 	 * to switch to 1.8V signaling level.  No 1.8v signalling if
@@ -738,7 +740,7 @@ try_again:
 			goto mismatch;
 		}
 	}
-	card->ocr = ocr_card;
+
 	mmc_fixup_device(card, sdio_fixup_methods);
 
 	if (card->type == MMC_TYPE_SD_COMBO) {
@@ -969,6 +971,7 @@ static int mmc_sdio_suspend(struct mmc_host *host)
 	cancel_delayed_work_sync(&host->sdio_irq_work);
 
 	mmc_claim_host(host);
+	mmc_log_string(host, "Enter\n");
 
 	if (mmc_card_keep_power(host) && mmc_card_wake_sdio_irq(host))
 		sdio_disable_wide(host->card);
@@ -980,6 +983,7 @@ static int mmc_sdio_suspend(struct mmc_host *host)
 		mmc_retune_needed(host);
 	}
 
+	mmc_log_string(host, "Exit\n");
 	mmc_release_host(host);
 
 	return 0;
@@ -991,6 +995,7 @@ static int mmc_sdio_resume(struct mmc_host *host)
 
 	/* Basic card reinitialization. */
 	mmc_claim_host(host);
+	mmc_log_string(host, "Enter\n");
 
 	/*
 	 * Restore power and reinitialize the card when needed. Note that a
@@ -1030,9 +1035,11 @@ static int mmc_sdio_resume(struct mmc_host *host)
 	}
 
 out:
+	mmc_log_string(host, "Exit err: %d\n", err);
 	mmc_release_host(host);
 
 	host->pm_flags &= ~MMC_PM_KEEP_POWER;
+	host->pm_flags &= ~MMC_PM_WAKE_SDIO_IRQ;
 	return err;
 }
 

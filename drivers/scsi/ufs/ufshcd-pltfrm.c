@@ -125,14 +125,26 @@ out:
 	return ret;
 }
 
+static bool phandle_exists(const struct device_node *np,
+			   const char *phandle_name, int index)
+{
+	struct device_node *parse_np = of_parse_phandle(np, phandle_name, index);
+
+	if (parse_np)
+		of_node_put(parse_np);
+
+	return parse_np != NULL;
+}
+
 #define MAX_PROP_SIZE 32
 static int ufshcd_populate_vreg(struct device *dev, const char *name,
-		struct ufs_vreg **out_vreg)
+				struct ufs_vreg **out_vreg)
 {
-	int ret = 0;
+	int len, ret = 0;
 	char prop_name[MAX_PROP_SIZE];
 	struct ufs_vreg *vreg = NULL;
 	struct device_node *np = dev->of_node;
+	const __be32 *prop;
 
 	if (!np) {
 		dev_err(dev, "%s: non DT initialization\n", __func__);
@@ -140,7 +152,7 @@ static int ufshcd_populate_vreg(struct device *dev, const char *name,
 	}
 
 	snprintf(prop_name, MAX_PROP_SIZE, "%s-supply", name);
-	if (!of_parse_phandle(np, prop_name, 0)) {
+	if (!phandle_exists(np, prop_name, 0)) {
 		dev_info(dev, "%s: Unable to find %s regulator, assuming enabled\n",
 				__func__, prop_name);
 		goto out;
@@ -151,27 +163,57 @@ static int ufshcd_populate_vreg(struct device *dev, const char *name,
 		return -ENOMEM;
 
 	vreg->name = kstrdup(name, GFP_KERNEL);
-
 	snprintf(prop_name, MAX_PROP_SIZE, "%s-max-microamp", name);
 	if (of_property_read_u32(np, prop_name, &vreg->max_uA)) {
 		dev_info(dev, "%s: unable to find %s\n", __func__, prop_name);
 		vreg->max_uA = 0;
 	}
 
+#if defined(CONFIG_SCSI_UFSHCD_QTI)
+	snprintf(prop_name, MAX_PROP_SIZE, "%s-min-microamp", name);
+	if (of_property_read_u32(np, prop_name, &vreg->min_uA))
+		vreg->min_uA = UFS_VREG_LPM_LOAD_UA;
+#endif
+
 	if (!strcmp(name, "vcc")) {
 		if (of_property_read_bool(np, "vcc-supply-1p8")) {
 			vreg->min_uV = UFS_VREG_VCC_1P8_MIN_UV;
 			vreg->max_uV = UFS_VREG_VCC_1P8_MAX_UV;
 		} else {
-			vreg->min_uV = UFS_VREG_VCC_MIN_UV;
-			vreg->max_uV = UFS_VREG_VCC_MAX_UV;
+			prop = of_get_property(np, "vcc-voltage-level", &len);
+			if (!prop || (len != (2 * sizeof(__be32)))) {
+				dev_warn(dev, "%s vcc-voltage-level property.\n",
+					prop ? "invalid format" : "no");
+				vreg->min_uV = UFS_VREG_VCC_MIN_UV;
+				vreg->max_uV = UFS_VREG_VCC_MAX_UV;
+			} else {
+				vreg->min_uV = be32_to_cpup(&prop[0]);
+				vreg->max_uV = be32_to_cpup(&prop[1]);
+			}
+ #if defined(CONFIG_SCSI_UFSHCD_QTI)
+			if (of_property_read_bool(np, "vcc-low-voltage-sup"))
+				vreg->low_voltage_sup = true;
+ #endif
 		}
 	} else if (!strcmp(name, "vccq")) {
 		vreg->min_uV = UFS_VREG_VCCQ_MIN_UV;
 		vreg->max_uV = UFS_VREG_VCCQ_MAX_UV;
 	} else if (!strcmp(name, "vccq2")) {
+#if defined(CONFIG_SCSI_UFSHCD_QTI)
+		prop = of_get_property(np, "vccq2-voltage-level", &len);
+		if (!prop || (len != (2 * sizeof(__be32)))) {
+			dev_warn(dev, "%s vccq2-voltage-level property.\n",
+				prop ? "invalid format" : "no");
+			vreg->min_uV = UFS_VREG_VCCQ2_MIN_UV;
+			vreg->max_uV = UFS_VREG_VCCQ2_MAX_UV;
+		} else {
+			vreg->min_uV = be32_to_cpup(&prop[0]);
+			vreg->max_uV = be32_to_cpup(&prop[1]);
+		}
+#else
 		vreg->min_uV = UFS_VREG_VCCQ2_MIN_UV;
 		vreg->max_uV = UFS_VREG_VCCQ2_MAX_UV;
+#endif
 	}
 
 	goto out;
@@ -435,8 +477,6 @@ int ufshcd_pltfrm_init(struct platform_device *pdev,
 		dev_err(dev, "Initialization failed\n");
 		goto dealloc_host;
 	}
-
-	platform_set_drvdata(pdev, hba);
 
 	pm_runtime_set_active(&pdev->dev);
 	pm_runtime_enable(&pdev->dev);

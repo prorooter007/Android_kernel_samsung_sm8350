@@ -1600,6 +1600,7 @@ static void hid_output_field(const struct hid_device *hid,
 	}
 }
 
+
 /*
  * Compute the size of a report.
  */
@@ -1997,6 +1998,9 @@ int hid_connect(struct hid_device *hdev, unsigned int connect_mask)
 		break;
 	case BUS_I2C:
 		bus = "I2C";
+		break;
+	case BUS_SPI:
+		bus = "SPI";
 		break;
 	case BUS_VIRTUAL:
 		bus = "VIRTUAL";

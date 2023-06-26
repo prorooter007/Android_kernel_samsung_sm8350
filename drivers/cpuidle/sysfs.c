@@ -297,6 +297,9 @@ define_show_state_function(target_residency)
 define_show_state_function(power_usage)
 define_show_state_ull_function(usage)
 define_show_state_ull_function(time)
+#ifdef CONFIG_QGKI_CPUIDLE_FAILED_STAT
+define_show_state_ull_function(failed)
+#endif
 define_show_state_str_function(name)
 define_show_state_str_function(desc)
 define_show_state_ull_function(disable)
@@ -310,6 +313,9 @@ define_one_state_ro(latency, show_state_exit_latency);
 define_one_state_ro(residency, show_state_target_residency);
 define_one_state_ro(power, show_state_power_usage);
 define_one_state_ro(usage, show_state_usage);
+#ifdef CONFIG_QGKI_CPUIDLE_FAILED_STAT
+define_one_state_ro(failed, show_state_failed);
+#endif
 define_one_state_ro(time, show_state_time);
 define_one_state_rw(disable, show_state_disable, store_state_disable);
 define_one_state_ro(above, show_state_above);
@@ -322,6 +328,9 @@ static struct attribute *cpuidle_state_default_attrs[] = {
 	&attr_residency.attr,
 	&attr_power.attr,
 	&attr_usage.attr,
+#ifdef CONFIG_QGKI_CPUIDLE_FAILED_STAT
+	&attr_failed.attr,
+#endif
 	&attr_time.attr,
 	&attr_disable.attr,
 	&attr_above.attr,
@@ -481,6 +490,7 @@ static int cpuidle_add_state_sysfs(struct cpuidle_device *device)
 					   &kdev->kobj, "state%d", i);
 		if (ret) {
 			kobject_put(&kobj->kobj);
+			kfree(kobj);
 			goto error_state;
 		}
 		cpuidle_add_s2idle_attr_group(kobj);
@@ -612,6 +622,7 @@ static int cpuidle_add_driver_sysfs(struct cpuidle_device *dev)
 				   &kdev->kobj, "driver");
 	if (ret) {
 		kobject_put(&kdrv->kobj);
+		kfree(kdrv);
 		return ret;
 	}
 
@@ -698,7 +709,6 @@ int cpuidle_add_sysfs(struct cpuidle_device *dev)
 	if (!kdev)
 		return -ENOMEM;
 	kdev->dev = dev;
-	dev->kobj_dev = kdev;
 
 	init_completion(&kdev->kobj_unregister);
 
@@ -706,9 +716,11 @@ int cpuidle_add_sysfs(struct cpuidle_device *dev)
 				   "cpuidle");
 	if (error) {
 		kobject_put(&kdev->kobj);
+		kfree(kdev);
 		return error;
 	}
 
+	dev->kobj_dev = kdev;
 	kobject_uevent(&kdev->kobj, KOBJ_ADD);
 
 	return 0;

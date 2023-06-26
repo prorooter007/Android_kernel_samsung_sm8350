@@ -148,10 +148,6 @@ config DEBUG_TEST_DRIVER_REMOVE
 	  unusable. You should say N here unless you are explicitly looking to
 	  test this functionality.
 
-config PM_QOS_KUNIT_TEST
-	bool "KUnit Test for PM QoS features"
-	depends on KUNIT=y
-
 config HMEM_REPORTING
 	bool
 	default n
@@ -208,5 +204,11 @@ config GENERIC_ARCH_TOPOLOGY
 	  CPU capacity information from DT, usage of such information for
 	  appropriate scaling, sysfs interface for reading capacity values at
 	  runtime.
+
+config CPU_CAPACITY_FIXUP
+	bool
+	default y
+	help
+     Enable to avoid that unity set cpuset of its client task to big core only.
 
 endmenu

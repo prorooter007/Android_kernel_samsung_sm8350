@@ -16,8 +16,8 @@
 #include <linux/timer.h>
 #include <linux/kernel.h>
 #include <linux/usb/hcd.h>
+#include <linux/usb/xhci-sec.h>
 #include <linux/io-64-nonatomic-lo-hi.h>
-#include <linux/android_kabi.h>
 
 /* Code sharing between pci-quirks and xhci hcd */
 #include	"xhci-ext-caps.h"
@@ -230,6 +230,9 @@ struct xhci_op_regs {
 #define CMD_ETE		(1 << 14)
 /* bits 15:31 are reserved (and should be preserved on writes). */
 
+#define XHCI_RESET_LONG_USEC		(1000 * 1000)
+#define XHCI_RESET_SHORT_USEC		(250 * 1000)
+
 /* IMAN - Interrupt Management Register */
 #define IMAN_IE		(1 << 1)
 #define IMAN_IP		(1 << 0)
@@ -441,8 +444,8 @@ struct xhci_op_regs {
 #define PORT_L1_TIMEOUT(p)(((p) & 0xff) << 2)
 #define PORT_BESLD(p)(((p) & 0xf) << 10)
 
-/* use 512 microseconds as USB2 LPM L1 default timeout. */
-#define XHCI_L1_TIMEOUT		512
+/* use 128 microseconds as USB2 LPM L1 default timeout. */
+#define XHCI_L1_TIMEOUT		128
 
 /* Set default HIRD/BESL value to 4 (350/400us) for USB2 L1 LPM resume latency.
  * Safe to use with mixed HIRD and BESL systems (host and device) and is used
@@ -813,9 +816,6 @@ struct xhci_command {
 	struct completion		*completion;
 	union xhci_trb			*command_trb;
 	struct list_head		cmd_list;
-
-	ANDROID_KABI_RESERVE(1);
-	ANDROID_KABI_RESERVE(2);
 };
 
 /* drop context bitmasks */
@@ -1537,8 +1537,6 @@ struct xhci_segment {
 	void			*bounce_buf;
 	unsigned int		bounce_offs;
 	unsigned int		bounce_len;
-
-	ANDROID_KABI_RESERVE(1);
 };
 
 struct xhci_td {
@@ -1624,9 +1622,6 @@ struct xhci_ring {
 	enum xhci_ring_type	type;
 	bool			last_td_was_short;
 	struct radix_tree_root	*trb_address_map;
-
-	ANDROID_KABI_RESERVE(1);
-	ANDROID_KABI_RESERVE(2);
 };
 
 struct xhci_erst_entry {
@@ -1644,8 +1639,6 @@ struct xhci_erst {
 	dma_addr_t		erst_dma_addr;
 	/* Num entries the ERST can contain */
 	unsigned int		erst_size;
-
-	ANDROID_KABI_RESERVE(1);
 };
 
 struct xhci_scratchpad {
@@ -1756,6 +1749,8 @@ struct xhci_hcd {
 	struct xhci_doorbell_array __iomem *dba;
 	/* Our HCD's current interrupter register set */
 	struct	xhci_intr_reg __iomem *ir_set;
+	/* secondary interrupter */
+	struct	xhci_intr_reg __iomem **sec_ir_set;
 
 	/* Cached register copies of read-only HC data */
 	__u32		hcs_params1;
@@ -1799,6 +1794,11 @@ struct xhci_hcd {
 	struct xhci_command	*current_cmd;
 	struct xhci_ring	*event_ring;
 	struct xhci_erst	erst;
+
+	/* secondary event ring and erst */
+	struct xhci_ring	**sec_event_ring;
+	struct xhci_erst	*sec_erst;
+
 	/* Scratchpad */
 	struct xhci_scratchpad  *scratchpad;
 	/* Store LPM test failed devices' information */
@@ -1919,12 +1919,6 @@ struct xhci_hcd {
 	struct list_head	regset_list;
 
 	void			*dbc;
-
-	ANDROID_KABI_RESERVE(1);
-	ANDROID_KABI_RESERVE(2);
-	ANDROID_KABI_RESERVE(3);
-	ANDROID_KABI_RESERVE(4);
-
 	/* platform-specific data -- must come last */
 	unsigned long		priv[0] __aligned(sizeof(s64));
 };
@@ -1934,10 +1928,6 @@ struct xhci_driver_overrides {
 	size_t extra_priv_size;
 	int (*reset)(struct usb_hcd *hcd);
 	int (*start)(struct usb_hcd *hcd);
-	int (*add_endpoint)(struct usb_hcd *hcd, struct usb_device *udev,
-			    struct usb_host_endpoint *ep);
-	int (*drop_endpoint)(struct usb_hcd *hcd, struct usb_device *udev,
-			     struct usb_host_endpoint *ep);
 	int (*check_bandwidth)(struct usb_hcd *, struct usb_device *);
 	void (*reset_bandwidth)(struct usb_hcd *, struct usb_device *);
 };
@@ -2082,20 +2072,18 @@ void xhci_free_container_ctx(struct xhci_hcd *xhci,
 
 /* xHCI host controller glue */
 typedef void (*xhci_get_quirks_t)(struct device *, struct xhci_hcd *);
-int xhci_handshake(void __iomem *ptr, u32 mask, u32 done, int usec);
+int xhci_handshake(void __iomem *ptr, u32 mask, u32 done, u64 timeout_us);
+int xhci_handshake_check_state(struct xhci_hcd *xhci,
+		void __iomem *ptr, u32 mask, u32 done, int usec);
 void xhci_quiesce(struct xhci_hcd *xhci);
 int xhci_halt(struct xhci_hcd *xhci);
 int xhci_start(struct xhci_hcd *xhci);
-int xhci_reset(struct xhci_hcd *xhci);
+int xhci_reset(struct xhci_hcd *xhci, u64 timeout_us);
 int xhci_run(struct usb_hcd *hcd);
 int xhci_gen_setup(struct usb_hcd *hcd, xhci_get_quirks_t get_quirks);
 void xhci_shutdown(struct usb_hcd *hcd);
 void xhci_init_driver(struct hc_driver *drv,
 		      const struct xhci_driver_overrides *over);
-int xhci_add_endpoint(struct usb_hcd *hcd, struct usb_device *udev,
-		      struct usb_host_endpoint *ep);
-int xhci_drop_endpoint(struct usb_hcd *hcd, struct usb_device *udev,
-		       struct usb_host_endpoint *ep);
 int xhci_check_bandwidth(struct usb_hcd *hcd, struct usb_device *udev);
 void xhci_reset_bandwidth(struct usb_hcd *hcd, struct usb_device *udev);
 int xhci_disable_slot(struct xhci_hcd *xhci, u32 slot_id);
@@ -2177,6 +2165,8 @@ int xhci_hub_control(struct usb_hcd *hcd, u16 typeReq, u16 wValue, u16 wIndex,
 int xhci_hub_status_data(struct usb_hcd *hcd, char *buf);
 int xhci_find_raw_port_number(struct usb_hcd *hcd, int port1);
 struct xhci_hub *xhci_get_rhub(struct usb_hcd *hcd);
+void xhci_set_port_power(struct xhci_hcd *xhci, struct usb_hcd *hcd, u16 index,
+			 bool on, unsigned long *flags);
 
 void xhci_hc_died(struct xhci_hcd *xhci);
 
@@ -2474,6 +2464,8 @@ static inline const char *xhci_decode_ctrl_ctx(unsigned long drop,
 	unsigned int	bit;
 	int		ret = 0;
 
+	str[0] = '\0';
+
 	if (drop) {
 		ret = sprintf(str, "Drop:");
 		for_each_set_bit(bit, &drop, 32)
@@ -2646,6 +2638,35 @@ static inline const char *xhci_ep_state_string(u8 state)
 	}
 }
 
+static inline const char *xhci_decode_doorbell(u32 slot, u32 doorbell)
+{
+	static char str[256];
+	u8 ep;
+	u16 stream;
+	int ret;
+
+	ep = (doorbell & 0xff);
+	stream = doorbell >> 16;
+
+	if (slot == 0) {
+		sprintf(str, "Command Ring %d", doorbell);
+		return str;
+	}
+	ret = sprintf(str, "Slot %d ", slot);
+	if (ep > 0 && ep < 32)
+		ret = sprintf(str + ret, "ep%d%s",
+			      ep / 2,
+			      ep % 2 ? "in" : "out");
+	else if (ep == 0 || ep < 248)
+		ret = sprintf(str + ret, "Reserved %d", ep);
+	else
+		ret = sprintf(str + ret, "Vendor Defined %d", ep);
+	if (stream)
+		ret = sprintf(str + ret, " Stream %d", stream);
+
+	return str;
+}
+
 static inline const char *xhci_ep_type_string(u8 type)
 {
 	switch (type) {
@@ -2721,5 +2742,9 @@ static inline const char *xhci_decode_ep_context(u32 info, u32 info2, u64 deq,
 
 	return str;
 }
+
+/* EHSET */
+int xhci_submit_single_step_set_feature(struct usb_hcd *hcd, struct urb *urb,
+					int is_setup);
 
 #endif /* __LINUX_XHCI_HCD_H */
